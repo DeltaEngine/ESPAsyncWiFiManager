@@ -113,6 +113,7 @@ void AsyncWiFiManager::setupConfigPortal()
 
   DEBUG_WM(F(""));
   _configPortalStart = millis();
+  _wifiConnectStatus = 0;
   // Scan once, before a phone is connected. Scanning later drops the phone.
   shouldscan = true;
   scanModal();
@@ -903,7 +904,7 @@ void AsyncWiFiManager::handleWifi(AsyncWebServerRequest *request, boolean scan)
   }
   String page = getPageHeader("Setup your Luke Wi-Fi");
   page.replace("{v}", "Setup your Luke Wi-Fi");
-  page += F("<p style='text-align:left;font-size:15px;color:#ddd;margin:0 0 8px;'>Tap your Wi-Fi and enter the password. We'll open the Luke control page.</p>");
+  page += F("<p style='text-align:left;font-size:15px;color:#ddd;margin:0 0 8px;'>Tap your Wi-Fi and enter the password. After setup, rejoin your home Wi-Fi and return to the assembly browser tab to continue to Control.</p>");
 
   if (scan)
   {
@@ -1032,7 +1033,7 @@ void AsyncWiFiManager::handleWifiSave(AsyncWebServerRequest *request)
   _wifiConnectStatus = 0; // Reset status to CONNECTING on form submit
   _ssid = request->arg("s").c_str();
   _pass = request->arg("p").c_str();
-  const char* redirectUrl = "https://lukerobotarm.com/#connect";
+  const char* redirectUrl = "https://lukerobotarm.com/#control";
 
   // Process custom parameters
   for (unsigned int i = 0; i < _paramsCount; i++)
@@ -1054,8 +1055,12 @@ void AsyncWiFiManager::handleWifiSave(AsyncWebServerRequest *request)
   page += F("<div class='c'>");
   page += F("<h2>Connecting Luke...</h2>");
   page += F("<p>Attempting to join <b>");
-  page += _ssid;
-  page += F("</b></p>");
+  String escapedSSID = _ssid;
+  escapedSSID.replace("&", "&amp;");
+  escapedSSID.replace("<", "&lt;");
+  escapedSSID.replace(">", "&gt;");
+  page += escapedSSID;
+  page += F("</b></p><p>If this window closes, rejoin your home Wi-Fi and return to your assembly browser tab.</p>");
 
   page += F("<div id='spinner'></div>");
   page += F("<div id='timer'>15</div>");
@@ -1081,6 +1086,8 @@ void AsyncWiFiManager::handleWifiSave(AsyncWebServerRequest *request)
   page += F("<script>");
   page += F("let statusPoll, checkInterval, timerInterval;");
   page += F("let timeLeft = 15;");
+  page += String((_connectTimeout ? _connectTimeout / 1000 : 30) + 10);
+  page += F(";let connected = false;");
   page += F("const targetUrl = '");
   page += redirectUrl;
   page += F("';");
@@ -1094,7 +1101,7 @@ void AsyncWiFiManager::handleWifiSave(AsyncWebServerRequest *request)
 
   // 1. Status Polling for Instant Error Catching
   page += F("statusPoll = setInterval(() => {");
-  page += F("  fetch('/status')");
+  page += F("  fetch('/status', {cache: 'no-store'})");
   page += F("    .then(res => res.text())");
   page += F("    .then(data => {");
   page += F("      if (data === 'FAILED') {");
@@ -1103,22 +1110,22 @@ void AsyncWiFiManager::handleWifiSave(AsyncWebServerRequest *request)
   page += F("        clearInterval(checkInterval);");
   page += F("        if (spinnerEl) spinnerEl.style.display = 'none';");
   page += F("        if (timerEl) timerEl.style.display = 'none';");
-  page += F("        statusEl.innerHTML = \"<span class='err'>Incorrect Wi-Fi Password!</span>\";");
-  page += F("        titleEl.innerText = 'Authentication Failed';");
-  page += F("        descEl.innerText = 'The SSID or password entered for ");
-  page += _ssid;
-  page += F(" was incorrect. Please try again.';");
+  page += F("        statusEl.innerHTML = \"<span class='err'>Wi-Fi connection failed.</span>\";");
+  page += F("        titleEl.innerText = 'Connection failed';");
+  page += F("        descEl.innerText = 'Check the network name, password and signal, then try again.';");
   page += F("        controllerSec.style.display = 'none';"); // Hide Controller Option on Wrong Password
   page += F("        fallbackEl.style.display = 'block';");
   page += F("      } else if (data === 'SUCCESS') {");
   page += F("        clearInterval(statusPoll);");
-  page += F("        statusEl.innerText = 'Connected! Redirecting...';");
+  page += F("        connected = true; timeLeft = 15;");
+  page += F("        statusEl.innerText = 'Luke connected. Rejoin your home Wi-Fi. If this window closes, return to the assembly tab.';");
   page += F("      }");
   page += F("    }).catch(() => {});");
   page += F("}, 1000);");
 
   // 2. Backup WAN Connection Polling
   page += F("checkInterval = setInterval(() => {");
+  page += F("  if (!connected) return;");
   page += F("  fetch(targetUrl, { mode: 'no-cors', cache: 'no-cache' })");
   page += F("    .then(() => {");
   page += F("      clearInterval(checkInterval);");
@@ -1129,7 +1136,7 @@ void AsyncWiFiManager::handleWifiSave(AsyncWebServerRequest *request)
   page += F("    }).catch(() => {});");
   page += F("}, 2000);");
 
-  // 3. 15-Second Countdown Timer
+  // 3. Wait for the connection result; start the handoff countdown only after SUCCESS.
   page += F("timerInterval = setInterval(() => {");
   page += F("  timeLeft--;");
   page += F("  if (timerEl) timerEl.innerText = timeLeft;");
@@ -1137,6 +1144,7 @@ void AsyncWiFiManager::handleWifiSave(AsyncWebServerRequest *request)
   page += F("    clearInterval(timerInterval);");
   page += F("    clearInterval(checkInterval);");
   page += F("    clearInterval(statusPoll);");
+  page += F("    if (connected) { window.location.replace(targetUrl); return; }");
   page += F("    if (spinnerEl) spinnerEl.style.display = 'none';");
   page += F("    if (timerEl) timerEl.style.display = 'none';");
   page += F("    statusEl.innerText = 'Connection status unconfirmed.';");
